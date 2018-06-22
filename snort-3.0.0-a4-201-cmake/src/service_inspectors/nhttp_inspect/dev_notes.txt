@@ -1,0 +1,157 @@
+This is the new Snort HTTP inspector. The old Snort HTTP preprocessor has also
+been ported to Snort++ and will be maintained until NHttpInspect is finished.
+At that time NHttpInspect will be renamed HttpInspect and the old HttpInspect
+will be retired. Meanwhile the abbreviations HI and NHI are sometimes used when
+it is important to distinguish the two modules.
+
+HI and NHI are not intended to be used together. Only configure one of them
+at a time.
+
+NHI is divided into two major parts. The NHttpStreamSplitter (splitter) accepts
+TCP payload data from Stream and subdivides it into message sections.
+NHttpInspect (inspector) processes individual message sections.
+
+Unlike other inspectors NHI has an empty eval() member. All processing is done
+by the inspector process() member which is called directly from splitter
+reassemble(). Thus the data flow for processing a message section is one or
+more calls to splitter scan(), followed by one or more calls to splitter
+reassemble(), the last of which calls process(). The reassembled buffer
+returned to the framework is already ready for detection and the subsequent
+eval() call does nothing.
+
+NHttpFlowData is a data class representing all NHI information relating to a
+flow. It serves as persistent memory between invocations of NHI by the
+framework. It also glues together the inspector, the client-to-server splitter,
+and the server-to-client splitter which pass information through the flow data.
+
+Message section is a core concept of NHI. A message section is a piece of an
+HTTP message that is processed together. There are seven types of message
+section:
+
+1. Request line (client-to-server start line)
+2. Status line (server-to-client start line)
+3. Headers (all headers after the start line as a group)
+4. Content-Length message body (a block of message data usually not much larger
+   than 16K from a body defined by the Content-Length header)
+5. Chunked message body (same but from a chunked body)
+6. Old message body (same but from a body with no Content-Length header that
+   runs to connection close)
+7. Trailers (all header lines following a chunked body as a group)
+
+Message sections are represented by message section objects that contain and
+process them. There are eleven message section classes that inherit as follows.
+An asterisk denotes a virtual class.
+
+1. NHttpMsgSection* - top level with all common elements
+2. NHttpMsgStart* : NHttpMsgSection - common elements of request and status
+3. NHttpMsgRequest : NHttpMsgStart
+4. NHttpMsgStatus : NHttpMsgStart
+5. NHttpMsgHeadShared* : NHttpMsgSection - common elements of header and trailer
+6. NHttpMsgHeader : NHttpMsgHeadShared
+7. NHttpMsgTrailer : NHttpMsgHeadShared
+8. NHttpMsgBody* : NHttpMsgSection - common elements of message body processing
+9. NHttpMsgBodyCl : NHttpMsgBody
+10. NHttpMsgBodyChunk : NHttpMsgBody
+11. NHttpMsgBodyOld : NHttpMsgBody
+
+An NHttpTransaction is a container that keeps all the sections of a message
+together and associates the request message with the response message.
+Transactions may be organized into pipelines when an HTTP pipeline is present.
+The current transaction and any pipeline live in the flow data. A transaction
+may have only a request because the response is not (yet) received or only a
+response because the corresponding request is unknown or unavailable.
+
+The attach_my_transaction() factory method contains all the logic that makes
+this work. There are many corner cases. Don't mess with it until you fully
+understand it.
+
+Message sections implement the Just-In-Time (JIT) principle for work products.
+A mimimum of essential processing is done under process(). Other work products
+are derived and stored the first time detection or some other customer asks for
+them. The Field class is an important tool for managing JIT. It consists of a
+pointer to a raw message field or derived work product with a length field.
+Various negative length values specify the status of the field. For instance
+STAT_NOTCOMPUTE means the item has not been computed yet, STAT_NOTPRESENT
+means the item does not exist, and STAT_PROBLEMATIC means an attempt to compute
+the item failed. Never dereference the pointer without first checking the
+length value.
+
+All of these values and more are in nhttp_enums.h which is a general repository
+for enumerated values in NHI.
+
+The NHI internal test tool is the NHttpTestInput class. It allows the developer
+to write tests that simulate HTTP messages split into TCP segments at specified
+points. The tests cover all of splitter and inspector and the impact on
+downstream customers such as detection and file processing.
+
+Test tool usage instructions:
+
+The test input comes from the file nhttp_test_msgs.txt in the current directory. Enter HTTP test
+message text as you want it to be presented to the StreamSplitter.
+
+The easiest way to format is to put a blank line between message sections so that each message
+section is its own "paragraph". Within a paragraph the placement of single new lines does not have
+any effect. Format a paragraph any way you are comfortable. Extra blank lines between paragraphs
+also do not have any effect.
+
+Each paragraph represents a TCP segment. The splitter can be tested by putting multiple sections in
+the same paragraph (splitter must split) or continuing a section in the next paragraph (splitter
+must search and reassemble).
+
+Lines beginning with # are comments. Lines beginning with @ are commands. This does not apply to
+lines in the middle of a paragraph.
+
+Commands:
+  @break resets HTTP Inspect data structures and begins a new test. Use it liberally to prevent
+     unrelated tests from interfering with each other.
+  @tcpclose simulates a half-duplex TCP close following the next paragraph of data.
+  @request and @response set the message direction. Applies to subsequent paragraphs until changed.
+     The initial direction is always request and the break command resets the direction to request.
+  @fill <decimal number> create a paragraph consisting of <number> octets of auto-fill data
+     ABCDEFGHIJABC ... Primarily useful for chunk testing.
+  @fileset <pathname> specifies a file from which the tool will read data into the message buffer.
+     This may be used to include a zipped or other binary file into a message body. Data is read
+     beginning at the start of the file.
+  @fileread <decimal number> read the specified number of bytes from the included file into the
+     message buffer. Each read corresponds to one TCP section.
+  @fileskip <decimal number> skips over the specified number of bytes in the included file. This
+     must be a positive number. To move backward do a new fileset and skip forward from the
+     beginning.
+  @fileclose resets the current file to none. Closing is done automatically whenever a new file is
+     set or there is a break command. An explicit close is only necessary when you want to revert
+     to generated fill data (see below).
+  @<decimal number> sets the test number and hence the test output file name. Applies to subsequent
+     sections until changed. Don't reuse numbers.
+
+Escape sequences begin with '\'. They may be used within a paragraph or to begin a paragraph.
+  \r - carriage return
+  \n - linefeed
+  \t - tab
+  \\ - backslash
+  \# - #
+  \@ - @
+  \xnn or \Xnn - where nn is a two-digit hexadecimal number. Insert an arbitrary 8-bit number as
+     the next character. a-f and A-F are both acceptable.
+
+Data is separated into segments for presentation to the splitter whenever a paragraph ends (blank
+line).
+
+Whenever a segment contains insufficient data to make up a body, fill data will be provided to
+make up the difference based on the Content-Length field. Specifically, flushing more data than in
+the current segment will trigger filling. The user should include at least one character of body
+data either as part of the previous header segment or at the beginning of a new segment following
+the headers. Fill data will be read from the currently included file. If no included file is
+currently set the fill data will be generated in the pattern ABC...XYZABC...
+
+The current chunk reassembly algorithm does not flush data beyond the current segment. The fill
+feature does not work with chunked bodies but the fill command can be used.
+
+Fill data will not be provided for a paragraph that is preceded by tcpclose. The body will
+terminate at the end of the paragraph.
+
+This test tool does not implement the feature of being hardened against bad input. If you write a
+badly formatted or improper test case the program may assert or crash. The responsibility is on the
+developer to get it right. Currently that is the best use of resources.
+
+Test input is currently designed for single-threaded operation only.
+

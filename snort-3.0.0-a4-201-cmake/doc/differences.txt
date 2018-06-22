@@ -1,0 +1,204 @@
+Snort++ differs from Snort in the following ways:
+
+* command line and conf file syntax made more uniform
+* removed unused and deprecated features
+* remove as many barriers to successful run as possible
+  (e.g.: no upper bounds on memcaps)
+* assume the simplest mode of operation
+  (e.g.: never assume input from or output to some hardcoded filename)
+* all Snort config options are grouped into Snort++ modules
+
+=== Build Options
+
+* configure --with-lib{pcap,pcre}-* -> --with-{pcap,pcre}-*
+* control socket, cs_dir, and users were deleted
+* POLICY_BY_ID_ONLY code was deleted
+* hardened --enable-inline-init-failopen / INLINE_FAILOPEN
+
+=== Command Line
+
+* --pause loads config and waits for resume before processing packets
+* --require-rule-sid is hardened
+* --shell enables interactive Lua shell
+* -T is assumed if no input given
+* added --help-config prefix to dump all matching settings
+* added --script-path
+* added -K text; -K text/pcap is old dump/log mode
+* added -z <#> and --max-packet-threads <#>
+* delete --enable-mpls-multicast, --enable-mpls-overlapping-ip, 
+  --max-mpls-labelchain-len, --mpls-payload-type
+* deleted --pid-path and --no-interface-pidfile
+* deleting command line options which will be available with --lua or some such including:
+  -I, -h, -F, -p, --disable-inline-init-failopen
+* hardened -n < 0
+* removed --search-method
+* replaced "unknown args are bpf" with --bpf
+* replaced --dynamic-*-lib[-dir] with --plugin-path (with : separators)
+* removed -b, -N, -Z and, --perfmon-file options
+
+=== Conf File
+
+* Snort++ has a default unicode.map
+* Snort++ will not enforce an upper bound on memcaps and the like within 64 bits
+* Snort++ will supply a default *_global config if not specified
+  (Snort would fatal; e.g. http_inspect_server w/o http_inspect_global)
+* address list syntax changes: [[ and ]] must be [ [ and ] ] to avoid Lua string
+  parsing errors (unless in quoted string)
+* because the Lua conf is live code, we lose file:line locations in app error messages
+  (syntax errors from Lua have file:line)
+* changed search-method names for consistency
+* delete config include_vlan_in_alerts (not used in code)
+* delete config so_rule_memcap (not used in code)
+* deleted --disable-attribute-table-reload-thread
+* deleted config decode_*_{alerts,drops} (use rules only)
+* deleted config dump-dynamic-rules-path
+* deleted config ipv6_frag (not actually used)
+* deleted config threshold and ips rule threshold (-> event_filter)
+* eliminated ac-split; must use ac-full-q split-any-any
+* frag3 -> defrag, arpspoof -> arp_spoof, sfportscan -> port_scan,
+  perfmonitor -> perf_monitor, bo -> back_orifice
+* limits like "1234K" are now "limit = 1234, units = 'K'"
+* lua field names are (lower) case sensitive; snort.conf largely wasn't
+* module filenames are not configurable: always <log-dir>/<module-name><suffix>
+  (suffix is determined by module)
+* no positional parameters; all name = value
+* perf_monitor configuration was simplified
+* portscan.detect_ack_scans deleted (exact same as include_midstream)
+* removed various run modes - now just one
+* frag3 default policy is Linux not bsd
+* lowmem* search methods are now in snort_examples
+* deleted unused http_inspect stateful mode
+* deleted stateless inspection from ftp and telnet
+* deleted http and ftp alert options (now strictly rule based)
+* preprocessor disabled settings deleted since no longer relevant
+* sessions are always created; snort config stateful checks eliminated
+* stream5_tcp: prune_log_max deleted; to be replaced with histogram
+* stream5_tcp: max_active_responses, min_response_seconds moved to 
+  active.max_responses, min_interval
+
+=== Rules
+
+* all rules must have a sid
+* deleted activate / dynamic rules
+* deleted metadata engine shared
+* deleted metadata: rule-flushing (with PDU flushing rule flushing can cause
+  missed attacks, the opposite of its intent)
+* deleted unused rule_state.action
+* fastpattern_offset, fast_pattern_length
+* no ; separated content suboptions
+* offset, depth, distance, and within must use a space separator not colon
+  (e.g. offset:5; becomes offset 5;)
+* rule option sequence: <stub> soid <hidden>
+* sid == 0 not allowed
+* soid is now a non-metadata option
+* content suboptions http_* are now full options and should be place before content
+* the following pcre options have been deleted: use sticky buffers instead
+    B, U, P, H, M, C, I, D, K, S, Y
+* deleted uricontent ips rule option.
+  uricontent:"foo" -->  http_uri; content:"foo"
+* deleted urilen raw and norm; must use http_raw_uri and http_uri instead
+* deleted unused http_encode option
+* urilen replaced with generic bufferlen which applies to current sticky
+  buffer
+* added optional selector to http_header, e.g. http_header:User-Agent;
+* multiline rules w/o \n
+* #begin ... #end comments
+
+
+=== Output
+
+* alert_fast includes packet data by default
+* all text mode outputs default to stdout
+* changed default logging mode to -K none
+* deleted layer2resets and flexresp2_*
+* deleted log_ascii
+* general output guideline: don't print zero counts
+* Snort++ queues decoder and inspector events to the main event queue before ips policy
+  is selected; since some events may not be enabled, the queue needs to be sized larger
+  than with Snort which used an intermediate queue for decoder events.
+* deleted the intermediate http and ftp_telnet event queues
+* alert_unified2 and log_unified2 have been deleted
+
+=== HTTP Profiles
+
+This section describes the changes to the Http Inspect config option "profile".
+
+Snort 2.X allows users to select pre-defined HTTP server profiles using the
+config option "profile". The user can choose one of five predefined profiles.
+When defined, this option will set defaults for other config options within
+Http Inspect.
+
+With Snort++, the user has the flexibility of defining and fine tuning custom
+profiles along with the five predefined profiles. 
+
+Snort 2.X conf
+
+    preprocessor http_inspect_server: server default \
+        profile apache ports { 80 3128 } max_headers 200
+
+Snort 3.0 conf
+
+    http_inspect = { profile = http_profile_apache }
+    http_inspect.profile.max_headers = 200 
+
+    binder =
+    {
+        {
+            when = { proto = 'tcp', ports = '80 3128', },
+            use = { type = 'http_inspect' },
+        },
+    } 
+
+NOTE: The "profile" option now that points to a table "http_profile_apache"
+which is defined in "snort_defaults.lua" (as follows).
+
+    http_profile_apache =
+    {
+        profile_type = 'apache',
+        server_flow_depth = 300,
+        client_flow_depth = 300,
+        post_depth = -1,
+        chunk_length = 500000,
+        ascii = true,
+        multi_slash = true,
+        directory = true,
+        webroot = true,
+        utf_8 = true,
+        apache_whitespace = true,
+        non_strict = true,
+        normalize_utf = true,
+        normalize_javascript = false,
+        max_header_length = 0,
+        max_headers = 0,
+        max_spaces = 200,
+        max_javascript_whitespaces = 200,
+        whitespace_chars ='0x9 0xb 0xc 0xd'
+    }
+
+NOTE: The config option "max_headers" is set to 0 in the profile, but
+overwritten by "http_inspect.profile.max_headers = 200".
+
+Conversion
+
+Snort2lua can convert the existing snort.conf with the "profile" option to
+Snort3.0 compatible "profile". Please refer to the Snort2Lua post for more
+details.
+
+Examples
+
+    "profile all" ==> "profile = http_profile_default"
+    "profile apache" ==> "profile = http_profile_apache"
+    "profile iis" ==> "profile = http_profile_iis"
+    "profile iis_40" ==> "profile = http_profile_iis_40"
+    "profile iis_50" ==> "profile = http_profile_iis_50"
+
+Defining custom profiles
+
+The complete set of Http Inspect config options that a custom profile can
+configure can be found by running the following command:
+
+    snort --help-config http_inspect | grep http_inspect.profile
+
+The new Http Inspect (new_http_inspect) implementation of config options is
+still under development.
+

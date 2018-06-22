@@ -1,0 +1,336 @@
+Snort\++ is an updated version of the Snort IPS (intrusion prevention
+system).  This document assumes you have some familiarity with Snort and
+are looking to see what Snort\++ has to offer.  Here are some of the basic
+goals for Snort++:
+
+* Support multiple packet processing threads
+* Use a shared configuration and attribute table
+* Use a simple, scriptable configuration
+* Make key components pluggable
+* Autogenerate reference documentation
+* Autodetect services for portless configuration
+* Support sticky buffers in rules
+* Provide better cross platform support
+
+The above goals are met with this first alpha release.  Additional,
+longer-term goals are:
+
+* Use a shared network map
+* Support pipelining of packet processing
+* Support hardware offload and data plane integration
+* Rewrite critical modules like TCP reassembly and HTTP inspection
+* Support proxy mode
+* Facilitate component testing
+* Simplify memory management
+* Provide all of Snort's functionality
+
+This first alpha release is based on Snort 2.9.6-9 and excludes all but one
+of Snort's dynamic preprocessors.  Work is underway to port that
+functionality and additions will be rolled out as they become available.
+
+=== Configuration
+
+Note that retaining backwards compatibility is not a goal.  While Snort\++
+leverages some of the Snort code base, a lot has changed.  The
+configuration of Snort++ is done with Lua, so your old conf won't work as
+is.  Rules are still text based but nonetheless incompatible.  However,
+Snort2Lua will help you convert your conf and rules to the new format.
+
+The original Snort manual may be useful for some background information not
+yet documented for Snort++.  The configuration differences are given in
+this manual.
+
+=== Modules
+
+Snort++ is organized into a collection of builtin and plugin modules.
+If a module has parameters, it is configured by a Lua table of the same
+name.  For example, we can see what the active module has to offer with
+this command:
+
+    $ snort --help-module active
+
+    What: configure responses
+
+    Type: basic
+
+    Configuration:
+
+    int active.attempts = 0: number of TCP packets sent per response (with
+    varying sequence numbers) { 0:20 }
+
+    string active.device: use 'ip' for network layer responses or 'eth0' etc
+    for link layer
+
+    string active.dst_mac: use format '01:23:45:67:89:ab'
+
+    int active.max_responses = 0: maximum number of responses { 0: }
+
+    int active.min_interval = 255: minimum number of seconds between
+    responses { 1: }
+
+This says active is a basic module that has several parameters.  For each,
+you will see:
+
+    type module.name = default: help { range }
+
+For example, the active module has a max_responses parameter that takes
+non-negative integer values and defaults to zero.  We can change that in
+Lua as follows:
+
+    active = { max_responses = 1 }
+
+or:
+
+    active = { }
+    active.max_responses = 1
+
+If we also wanted to limit retries to at least 5 seconds, we could do:
+
+    active = { max_responses = 1, min_interval = 5 }
+
+=== Plugins and Scripts
+
+There are several plugin types:
+
+* Codec - to decode and encode packets
+* Inspector - like the prior preprocessors, for normalization, etc.
+* IpsOption - for detection in Snort++ IPS rules
+* IpsAction - for custom rule actions
+* Logger - for handling events
+* Mpse - for fast pattern matching
+* So - for dynamic rules
+
+Most plugins can be built statically or dynamically.  By default they are
+all static.  There is no difference in functionality between static or
+dynamic plugins but the dynamic build generates a slightly lighter weight
+binary.  Either way you can add dynamic plugins with --plugin-path and
+newer versions will replace older versions, even when built statically.
+
+The power of plugins is that they have a very focused purpose and can be
+created with relative ease.  For example, you can extend the rule language
+by writing your own IpsOption and it will plug in and function just like
+existing options.  The extra directory has examples of each type of plugin.
+
+Some things just need to be tweaked or prototyped quickly.  In addition to
+the Lua conf, which is a script that can contain functions to compute
+settings, etc., you can also script Loggers and IpsOptions.
+
+=== New Http Inspector
+
+One of the major undertakings for Snort 3.0 is developing a completely new
+HTTP inspector. It is incomplete right now but you can examine the
+work-in-progress. You can configure it by adding:
+
+    new_http_inspect = {}
+
+to your snort.lua configuration file. Or you can read it in the source code
+under src/service_inspectors/nhttp_inspect.
+
+The classic HTTP preprocessor is still available in the alpha release as
+http_inspect. It’s probably the better choice for now if you just want to
+do some work and do not feel like experimenting. Be sure not to configure
+    both old and new HTTP inspectors at the same time.
+
+So why a new HTTP inspector?
+
+For starters it is object-oriented. That’s good for us because we maintain
+this software. But it should also be really nice for open-source
+developers. You can make meaningful changes and additions to HTTP
+processing without having to understand the whole thing. In fact much of
+the new HTTP inspector’s knowledge of HTTP is centralized in a series of
+tables where it can be easily reviewed and modified. Many significant
+changes can be made just by updating these tables.
+
+New_http_inspect is the first inspector written specifically for the new
+Snort 3.0 architecture. That provides access to one of the very best
+features of Snort 3.0: purely PDU-based inspection. Classic http_inspect
+processes HTTP messages, but even while doing so it is constantly aware of
+IP packets and how they divide up the TCP data stream. The same HTTP
+message might be processed differently depending on how the sender (bad
+guy) divided it up into IP packets.
+
+New_http_inspect is free of this burden and can focus exclusively on HTTP.
+That makes it much more simple, easier to test, and less prone to false
+positives. It also greatly reduces the opportunity for adversaries to probe
+the inspector for weak spots by adjusting packet boundaries to disguise bad
+behavior.
+
+Dealing solely with HTTP messages also opens the door for developing major
+new features. The new_http_inspect design supports true stateful
+processing. Want to ask questions that involve both the client request and
+the server response? Or different requests in the same session? These
+things are possible.
+
+Another new feature on the horizon is HTTP/2 analysis. HTTP/2 derives from
+Google’s SPDY project and is in the process of being standardized. Despite
+the name, it is better to think of HTTP/2 not as a newer version of
+HTTP/1.1, but rather a separate protocol layer that runs under HTTP/1.1 and
+on top of TLS or TCP. It’s a perfect fit for the new Snort 3.0 architecture
+because a new HTTP/2 inspector would naturally output HTTP/1.1 messages but
+not any underlying packets. Exactly what the new_http_inspect wants to
+input.
+
+New_http_inspect is taking a very different approach to HTTP header fields.
+Classic http_inspect divides all the HTTP headers following the start line
+into cookies and everything else. It normalizes the two pieces using a
+generic process and puts them in buffers that one can write rules against.
+There is some limited support for examining individual headers within the
+inspector but it is very specific.
+
+The new concept is that every header should be normalized in an appropriate
+and specific way and individually made available for the user to write
+rules against it. If for example a header is supposed to be a date then
+normalization means put that date in a standard format.
+
+=== Binder and Wizard
+
+One of the fundamental differences between Snort and Snort++ concerns configuration related to networks and ports.  Here is a brief review of Snort's configuration for network and service related components:
+
+* Snort's configuration has a default policy and optional policies selected by
+  VLAN or network (with config binding).
+
+* Each policy contains a user defined set of preprocessor configurations.
+
+* Each preprocessor has a default configuration and some support non-default
+  configurations selected by network.
+
+* Most preprocessors have port configurations.
+
+* The default policy may also contain a list of ports to ignore.
+
+In Snort++, the above configurations are done in a single module called the binder.  Here is an example:
+
+    binder =
+    {
+        -- allow all tcp port 22:
+        -- (similar to snort 2.X config ignore_ports)
+        { when = { proto = 'tcp', ports = '22' }, use = { action = 'allow' } },
+
+        -- select a config file by vlan
+        -- (similar to snort 2.X config binding by vlan)
+        { when = { vlans = '1024' }, use = { file = 'vlan.lua' } },
+
+        -- use a non-default HTTP inspector for port 8080:
+        -- (similar to a snort 2.X targeted preprocessor config)
+        { when = { nets = '192.168.0.0/16', proto = 'tcp', ports = '8080' },
+          use = { name = 'alt_http', type = 'http_inspect' } },
+
+        -- use the default inspectors:
+        -- (similar to a snort 2.X default preprocessor config)
+        { when = { proto = 'tcp' }, use = { type = 'stream_tcp' } },
+        { when = { service = 'http' }, use = { type = 'http_inspect' } },
+
+        -- figure out which inspector to run automatically:
+        { use = { type = 'wizard' } }
+    }
+
+Bindings are evaluated when a session starts and again if and when service is
+identified on the session.  Essentially, the bindings are a list of when-use
+rules evaluated from top to bottom.  The first matching network and service
+configurations are applied.  binder.when can contain any combination of
+criteria and binder.use can specify an action, config file, or inspector
+configuration.
+
+Using the wizard enables port-independent configuration and the detection of
+malware command and control channels.  If the wizard is bound to a session, it
+peeks at the initial payload to determine the service.  For example, 'GET'
+would indicate HTTP and 'HELO' would indicate SMTP.  Upon finding a match, the
+service bindings are reevaluated so the session can be handed off to the
+appropriate inspector.  The wizard is still under development; if you find you
+need to tweak the defaults please let us know.
+
+Additional Details:
+
+* If the wizard and one or more service inspectors are configured w/o
+  explicitly configuring the binder, default bindings will be generated which
+  should work for most common cases.
+
+* Also note that while Snort 2.X bindings can only be configured in the
+  default policy, each Snort 3.0 policy can contain a binder leading to an
+  arbitrary hierarchy.
+
+* The entire configuration can be reloaded and hot-swapped during run-time
+  via signal or command in both Snort 2.X and 3.0.  Ultimately, Snort 3.0
+  will support commands to update the binder on the fly, thus enabling
+  incremental reloads of individual inspectors.
+
+* Both Snort 2.X and 3.0 support server specific configurations via a hosts
+  table (XML in Snort 2.X and Lua in Snort 3.0).  The table allows you to
+  map network, protocol, and port to a service and policy.  This table can
+  be reloaded and hot-swapped separately from the config file.
+
+* You can find the specifics on the binder, wizard, and hosts tables in the
+  manual or command line like this:  snort --help-module binder, etc.
+
+=== Packet Processing
+
+
+One of the goals of Snort++ is to provide a more flexible framework for
+packet processing by implementing an event-driven approach.  Another is to
+produce data only when needed, to minimize expensive normalizations.  To help
+explain these concepts, let's start by examining how Snort processes
+packets.  The key steps are given in the following figure:
+
+////
+(pkt) -> [decode] -> [preprocess] -> [detect] -> [log] -> (verdict)
+////
+image::snort2x.png["Snort 2X",width="640"]
+
+The preprocess step is highly configurable.  Arbitrary preprocessors can be
+loaded dynamically at startup, configured in snort.conf, and then executed
+at runtime.  Basically, the preprocessors are put into a list which is
+iterated for each packet.  Recent versions have tweaked the list handling
+some, but the same basic architecture has allowed Snort to grow from a
+sniffer, with no preprocessing, to a full-fledged IPS, with lots of
+preprocessing.
+
+While this "list of plugins" approach has considerable flexibility, it
+hampers future development when the flow of data from one preprocessor to
+the next depends on traffic conditions, a common situation with advanced
+features like application identification.  In this case, a preprocessor
+like HTTP may be extracting and normalizing data that ultimately is not
+used, or app ID may be repeatedly checking for data that is just not
+available.
+
+Callbacks help break out of the preprocess straightjacket.  This is where
+one preprocessor supplies another with a function to call when certain data
+is available.  Snort has started to take this approach to pass some HTTP and
+SIP preprocessor data to app ID.  However, it remains a peripheral feature
+and still requires the production of data that may not be consumed.
+
+The basic processing steps Snort\++ takes are similar to Snort's as seen in
+the following diagram.  The preprocess step employs specific inspector
+types instead of a generalized list, but the basic procedure includes
+stateless packet decoding, TCP stream reassembly, and service specific
+analysis in both cases.  (Snort++ provides hooks for arbitrary inspectors,
+but they are not central to basic flow processing and are not shown.)
+
+////
+(pkt) -> [decode] -> [stream] -> [service] -> [detect] -> [log] -> (verdict)
+         -----------------------------------------------------
+                    [app id]   [firewall]   [other]
+////
+image::snort3x.png["Snort 3X",width="640"]
+
+However, Snort++ also provides a more flexible mechanism than callback
+functions.  By using inspection events, it is possible for an inspector to
+supply data that other inspectors can process.  This is known as the
+observer pattern or publish-subscribe pattern.
+
+Note that the data is not actually published.  Instead, access to the data
+is published, and that means that subscribers can access the raw or
+normalized version(s) as needed.  Normalizations are done only on the first
+access, and subsequent accesses get the previously normalized data.  This
+results in just in time (JIT) processing.
+
+A basic example of this in action is provided by the extra data_log plugin.
+It is a passive inspector, ie it does nothing until it receives the data it
+subscribed for ('other' in the above diagram).  By adding data_log = { key
+= 'http_raw_uri' } to your snort.lua configuration, you will get a simple
+URI logger.
+
+Inspection events coupled with pluggable inspectors provide a very flexible
+framework for implementing new features.  And JIT buffer stuffers allow
+Snort\++ to work smarter, not harder.  These capabilities will be leveraged
+more and more as Snort++ development continues.
+

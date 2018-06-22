@@ -1,0 +1,29 @@
+This directory contains all the files related to DCE-RPC protocol
+processing.
+
+DCE is supported over TCP/IP, UDP, SMB and HTTP v1 Proxy and Server.
+The DCE-RPC preprocessor is split into four inspectors - one for each
+transport. This includes the configuration as well as the inspector
+modules.
+
+The inspectors perform SMB desegmentation and DCE-RPC defragmentation
+to avoid rule evasion using these techniques. IPS rule options are
+supported for matching on interface, opnum and stub data.
+
+The Snort 2x server configuration is now split between the inspectors.
+Options that are meaningful to all inspectors, such as policy, are
+copied into each inspector configuration.
+
+The address/port mapping is handled by the binder. Since the
+infrastructure has no support for "autodetect" all ports are treated
+the same currently and autodetection performed. Default autodetect
+ranges were temporarly replaced by a single port default.
+
+The Snort 2x global configuration is now rolled into server
+configuration.
+
+Note: Some logic related to DCE segmentation and packet stack seems
+unnecessary. It is assumed that the only case for which segmentation
+logic will come into play is if the fragment size is > MAX_PAF_MAX 
+resulting in a partial fragment being delivered to the inspector. All
+other logic has been removed with comment #PORT_IF_NEEDED.
